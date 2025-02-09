@@ -1,14 +1,36 @@
-# Welcome to your CDK TypeScript project
+## これはなに
 
-This is a blank project for CDK development with TypeScript.
+- Re:dash を ECS Fargate で構築するためのスクリプト
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+## 構成
 
-## Useful commands
+```mermaid
+graph TD;
+    subgraph VPC
+        subgraph Public_Subnet
+            D[ALB] 
+            G[ECS Service] 
+        end
 
-* `npm run build`   compile typescript to js
-* `npm run watch`   watch for changes and compile
-* `npm run test`    perform the jest unit tests
-* `npx cdk deploy`  deploy this stack to your default AWS account/region
-* `npx cdk diff`    compare deployed stack with current state
-* `npx cdk synth`   emits the synthesized CloudFormation template
+        subgraph Private_Subnet
+            E[RDS Instance] 
+            F[Redis Instance] 
+        end
+    end
+
+    Public_Subnet
+    Public_Subnet
+    Private_Subnet 
+    Private_Subnet
+
+    Request --> D
+    D --> G
+    G --> E
+    G --> F
+
+    style D fill:#99ff99,stroke:#333,stroke-width:2px;
+    style E fill:#ff6600,stroke:#333,stroke-width:2px;
+    style F fill:#ff9900,stroke:#333,stroke-width:2px;
+    style G fill:#ccffcc,stroke:#333,stroke-width:2px;
+```
+

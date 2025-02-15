@@ -10,8 +10,14 @@ import { RedashWorkerConstruct } from './constructs/redash-worker';
 import { RedisConstruct } from './constructs/redis';
 import { VpcConstruct } from './constructs/vpc';
 
+type Props = cdk.StackProps & {
+  certificateArn: string | null;
+  customDomain: string | null;
+  rootDomain: string | null;
+};
+
 export class RedashEcsStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props: Props) {
     super(scope, id, props);
 
     // VPCの作成
@@ -59,6 +65,9 @@ export class RedashEcsStack extends cdk.Stack {
         ...defaultTaskParams,
         ssmClientIdPath: Constants.googleClientIdPath,
         ssmClientSecretPath: Constants.googleClientSecretPath,
+        certificateArn: props.certificateArn,
+        customDomain: props.customDomain,
+        rootDomain: props.rootDomain,
       }
     );
     rdsSecurityGroup.addIngressRule(
@@ -83,15 +92,83 @@ export class RedashEcsStack extends cdk.Stack {
       defaultTaskParams
     );
     // データベースの初期化に必要
-    new cdk.CfnOutput(this, 'run-db-initialize-command', {
-      value: `aws ecs run-task --cluster ${cluster.clusterName} \
---task-definition ${initDbTask.taskDefinition.taskDefinitionArn} \
---launch-type FARGATE \
---network-configuration 'awsvpcConfiguration={subnets=[${vpc.publicSubnets[0].subnetId}], securityGroups=[${securityGroup.securityGroupId}], assignPublicIp=ENABLED}'`,
-      description:
-        'Run this command to create the Redash Table after the RDS instance is created',
+    this.outputTriggerInitDbTaskScript(cluster, initDbTask, vpc, securityGroup);
+    // 必要があれば、コンテナにアタッチして直接さがす
+    this.outputAttachContainerScript(cluster, service);
+
+    this.outputGoogleCallbackUrl(service);
+
+    this.createWorkerTask(
+      'RedashScheduler',
+      {
+        ...defaultTaskParams,
+        serviceName: 'scheduler',
+        queues: 'celery',
+        workersCount: '1',
+        command: 'scheduler',
+      },
+      securityGroup
+    );
+    this.createWorkerTask(
+      'RedashScheduledWorker',
+      {
+        ...defaultTaskParams,
+        serviceName: 'scheduled-worker',
+        queues: 'scheduled_queries,schemas',
+        workersCount: '1',
+        command: 'worker',
+      },
+      securityGroup
+    );
+    this.createWorkerTask(
+      'RedashAdhocWorker',
+      {
+        ...defaultTaskParams,
+        serviceName: 'adhoc_worker',
+        queues: 'queries',
+        workersCount: '2',
+        command: 'worker',
+      },
+      securityGroup
+    );
+  }
+
+  private createWorkerTask(
+    id: string,
+    taskParams: {
+      cluster: cdk.aws_ecs.Cluster;
+      redisUrl: string;
+      dbUrl: string;
+      redashCookieSecret: string;
+      redashSecretKey: string;
+      serviceName: string;
+      queues: string;
+      workersCount: string;
+      command: string;
+    },
+    securityGroup: cdk.aws_ec2.SecurityGroup
+  ) {
+    const { serviceName, queues, workersCount, command, ...params } =
+      taskParams;
+    new RedashWorkerConstruct(this, id, {
+      ...params,
+      securityGroup,
+      params: { serviceName, queues, workersCount, command },
     });
-    // 必要があれば、コンテナにアタッチして直接さがす　
+  }
+
+  private outputGoogleCallbackUrl(
+    service: cdk.aws_ecs_patterns.ApplicationLoadBalancedFargateService
+  ) {
+    new cdk.CfnOutput(this, 'GoogleLoginCallbackURL', {
+      value: `https://${service.loadBalancer.loadBalancerDnsName}/oauth/google_callback`,
+    });
+  }
+
+  private outputAttachContainerScript(
+    cluster: cdk.aws_ecs.Cluster,
+    service: cdk.aws_ecs_patterns.ApplicationLoadBalancedFargateService
+  ) {
     new cdk.CfnOutput(this, 'run-to-attach-to-container', {
       value: `aws ecs execute-command --cluster ${cluster.clusterName} \
 --task $(aws ecs list-tasks --cluster ${cluster.clusterArn} --family ${
@@ -103,42 +180,21 @@ export class RedashEcsStack extends cdk.Stack {
 --interactive \
 --command "/bin/bash"`,
     });
-    new cdk.CfnOutput(this, 'GoogleLoginCallbackURL', {
-      value: `https://${service.loadBalancer.loadBalancerDnsName}/oauth/google_callback`,
-    });
+  }
 
-    new RedashWorkerConstruct(this, 'RedashScheduler', {
-      ...defaultTaskParams,
-      securityGroup,
-      params: {
-        serviceName: 'scheduler',
-        queues: 'celery',
-        workersCount: '1',
-        command: 'scheduler',
-      },
+  private outputTriggerInitDbTaskScript(
+    cluster: cdk.aws_ecs.Cluster,
+    initDbTask: RedashInitTask,
+    vpc: cdk.aws_ec2.Vpc,
+    securityGroup: cdk.aws_ec2.SecurityGroup
+  ) {
+    new cdk.CfnOutput(this, 'run-db-initialize-command', {
+      value: `aws ecs run-task --cluster ${cluster.clusterName} \
+--task-definition ${initDbTask.taskDefinition.taskDefinitionArn} \
+--launch-type FARGATE \
+--network-configuration 'awsvpcConfiguration={subnets=[${vpc.publicSubnets[0].subnetId}], securityGroups=[${securityGroup.securityGroupId}], assignPublicIp=ENABLED}'`,
+      description:
+        'Run this command to create the Redash Table after the RDS instance is created',
     });
-    new RedashWorkerConstruct(this, 'RedashScheduledWorker', {
-      ...defaultTaskParams,
-      securityGroup,
-      params: {
-        serviceName: 'scheduled-worker',
-        queues: 'scheduled_queries,schemas',
-        workersCount: '1',
-        command: 'worker',
-      },
-    });
-    new RedashWorkerConstruct(this, 'RedashAdhocWorker', {
-      ...defaultTaskParams,
-      securityGroup,
-      params: {
-        serviceName: 'adhoc_worker',
-        queues: 'queries',
-        workersCount: '2',
-        command: 'worker',
-      },
-    });
-
-    // TODO: カスタムドメインの発行
-    // TODO: ACMの発行
   }
 }

@@ -1,12 +1,14 @@
 import * as cdk from 'aws-cdk-lib';
+import { Certificate } from 'aws-cdk-lib/aws-certificatemanager';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecs_patterns from 'aws-cdk-lib/aws-ecs-patterns';
 import {
   ApplicationLoadBalancer,
-  Protocol,
+  Protocol
 } from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import { HostedZone } from 'aws-cdk-lib/aws-route53';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import { Constants } from '../constant';
@@ -19,6 +21,10 @@ type Props = {
   redashCookieSecret: string;
   ssmClientIdPath: string;
   ssmClientSecretPath: string;
+
+  certificateArn: string | null;
+  customDomain: string | null;
+  rootDomain: string | null;
 };
 /**
  * Create ELB and Fargate Service for Redash Server
@@ -28,29 +34,10 @@ export class RedashServerConstruct extends Construct {
   securityGroup: ec2.SecurityGroup;
   constructor(scope: Construct, id: string, props: Props) {
     super(scope, id);
-    this.securityGroup = new ec2.SecurityGroup(
-      this,
-      'RedashServerSecurityGroup',
-      {
-        securityGroupName: 'redash-ecs-sg',
-        vpc: props.vpc,
-      }
-    );
-    this.securityGroup.addEgressRule(
-      ec2.Peer.anyIpv4(),
-      ec2.Port.allTcp(),
-      'ECS Service Internet Access'
-    );
+    const securityGroup = this.buildTaskSecurityGroup(props);
+    this.securityGroup = securityGroup;
 
-    const albSecurityGroup = new ec2.SecurityGroup(this, 'SecurityGroup', {
-      vpc: props.vpc,
-      allowAllOutbound: true,
-    });
-    albSecurityGroup.addIngressRule(
-      ec2.Peer.anyIpv4(),
-      ec2.Port.tcp(80),
-      'Web Port'
-    );
+    const albSecurityGroup = this.buildAlbSecurityGroup(props);
     this.securityGroup.addIngressRule(
       ec2.Peer.securityGroupId(albSecurityGroup.securityGroupId),
       ec2.Port.tcp(5000),
@@ -63,7 +50,27 @@ export class RedashServerConstruct extends Construct {
       securityGroup: albSecurityGroup,
       vpc: props.vpc,
     });
-
+    // if (props.certificateArn) {
+    //   alb.addListener('SSLListener', {
+    //     port: 443,
+    //     protocol: ApplicationProtocol.HTTPS,
+    //     certificates: [
+    //       Certificate.fromCertificateArn(
+    //         this,
+    //         'Certificate',
+    //         props.certificateArn
+    //       ),
+    //     ],
+    //   });
+    //   alb.addListener('HTTPListener', {
+    //     port: 80,
+    //     protocol: ApplicationProtocol.HTTP,
+    //     defaultAction: ListenerAction.redirect({
+    //       port: '443',
+    //       protocol: ApplicationProtocol.HTTPS,
+    //     }),
+    //   });
+    // }
     const taskDefinition = this.#createTaskDefinition(props);
 
     this.service = new ecs_patterns.ApplicationLoadBalancedFargateService(
@@ -82,6 +89,20 @@ export class RedashServerConstruct extends Construct {
         securityGroups: [this.securityGroup],
         // コンテナのコマンドを実行できるようにする
         enableExecuteCommand: true,
+        redirectHTTP: false, //!!props.certificateArn,
+        domainZone: props.rootDomain
+          ? HostedZone.fromLookup(this, 'HostedZone', {
+              domainName: props.rootDomain,
+            })
+          : undefined,
+        domainName: props.customDomain ?? undefined,
+        certificate: props.certificateArn
+          ? Certificate.fromCertificateArn(
+              this,
+              'Certificate',
+              props.certificateArn
+            )
+          : undefined,
       }
     );
     this.service.targetGroup.configureHealthCheck({
@@ -94,6 +115,41 @@ export class RedashServerConstruct extends Construct {
       healthyThresholdCount: 2,
       unhealthyThresholdCount: 5,
     });
+  }
+
+  private buildTaskSecurityGroup(props: Props) {
+    const securityGroup = new ec2.SecurityGroup(
+      this,
+      'RedashServerSecurityGroup',
+      {
+        securityGroupName: 'redash-ecs-sg',
+        vpc: props.vpc,
+      }
+    );
+    securityGroup.addEgressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.allTcp(),
+      'ECS Service Internet Access'
+    );
+    return securityGroup;
+  }
+
+  private buildAlbSecurityGroup(props: Props) {
+    const albSecurityGroup = new ec2.SecurityGroup(this, 'SecurityGroup', {
+      vpc: props.vpc,
+      allowAllOutbound: true,
+    });
+    albSecurityGroup.addIngressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(80),
+      'Web Port'
+    );
+    albSecurityGroup.addIngressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(443),
+      'Web Port'
+    );
+    return albSecurityGroup;
   }
 
   #createTaskDefinition(props: Props): ecs.FargateTaskDefinition {

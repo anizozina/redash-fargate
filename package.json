@@ -1,6 +1,7 @@
 {
   "name": "redash-ecs",
   "version": "0.1.0",
+  "type": "module",
   "bin": {
     "redash-ecs": "bin/app.ts"
   },
@@ -19,6 +20,7 @@
     "vitest": "^3.0.4"
   },
   "dependencies": {
+    "@aws-sdk/client-ssm": "^3.749.0",
     "aws-cdk-lib": "2.177.0",
     "constructs": "^10.0.0"
   }

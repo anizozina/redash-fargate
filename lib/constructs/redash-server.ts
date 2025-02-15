@@ -7,6 +7,7 @@ import {
   Protocol,
 } from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import { Constants } from '../constant';
 type Props = {
@@ -16,6 +17,8 @@ type Props = {
   dbUrl: string;
   redashSecretKey: string;
   redashCookieSecret: string;
+  ssmClientIdPath: string;
+  ssmClientSecretPath: string;
 };
 /**
  * Create ELB and Fargate Service for Redash Server
@@ -94,6 +97,35 @@ export class RedashServerConstruct extends Construct {
   }
 
   #createTaskDefinition(props: Props): ecs.FargateTaskDefinition {
+    const environmentVariables = (() => {
+      const params = {
+        PYTHONUNBUFFERED: '0',
+        REDASH_LOG_LEVEL: 'DEBUG',
+        REDASH_REDIS_URL: props.redisUrl,
+        REDASH_DATABASE_URL: props.dbUrl,
+        REDASH_SECRET_KEY: props.redashSecretKey,
+        REDASH_COOKIE_SECRET: props.redashCookieSecret,
+        REDASH_PASSWORD_LOGIN_ENABLED: 'false',
+        REDASH_ALLOW_SCRIPTS_IN_USER_INPUT: 'true',
+        REDASH_DATE_FORMAT: 'YY/MM/DD',
+      };
+      const clientSecret = ssm.StringParameter.valueForStringParameter(
+        this,
+        props.ssmClientSecretPath
+      );
+      const clientId = ssm.StringParameter.valueForStringParameter(
+        this,
+        props.ssmClientIdPath
+      );
+      if (clientSecret && clientId) {
+        return {
+          ...params,
+          REDASH_GOOGLE_CLIENT_ID: clientId,
+          REDASH_GOOGLE_CLIENT_SECRET: clientSecret,
+        };
+      }
+      return params;
+    })();
     const taskDefinition = new ecs.FargateTaskDefinition(
       this,
       'TaskDefinition',
@@ -114,17 +146,7 @@ export class RedashServerConstruct extends Construct {
           }),
           streamPrefix: 'redash-server',
         }),
-        environment: {
-          PYTHONUNBUFFERED: '0',
-          REDASH_LOG_LEVEL: 'DEBUG',
-          REDASH_REDIS_URL: props.redisUrl,
-          REDASH_DATABASE_URL: props.dbUrl,
-          REDASH_SECRET_KEY: props.redashSecretKey,
-          REDASH_COOKIE_SECRET: props.redashCookieSecret,
-          REDASH_PASSWORD_LOGIN_ENABLED: 'false',
-          REDASH_ALLOW_SCRIPTS_IN_USER_INPUT: 'true',
-          REDASH_DATE_FORMAT: 'YY/MM/DD',
-        },
+        environment: environmentVariables,
         command: ['server'],
       })
       .addPortMappings({

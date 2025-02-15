@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { Construct } from 'constructs';
+import { Constants } from './constant';
 import { EcsConstruct } from './constructs/ecs';
 import { RdsConstruct } from './constructs/rds';
 import { RedashInitTask } from './constructs/redash-init-task';
@@ -56,6 +57,8 @@ export class RedashEcsStack extends cdk.Stack {
       {
         vpc,
         ...defaultTaskParams,
+        ssmClientIdPath: Constants.googleClientIdPath,
+        ssmClientSecretPath: Constants.googleClientSecretPath,
       }
     );
     rdsSecurityGroup.addIngressRule(
@@ -99,6 +102,9 @@ export class RedashEcsStack extends cdk.Stack {
       } \
 --interactive \
 --command "/bin/bash"`,
+    });
+    new cdk.CfnOutput(this, 'GoogleLoginCallbackURL', {
+      value: `https://${service.loadBalancer.loadBalancerDnsName}/oauth/google_callback`,
     });
 
     new RedashWorkerConstruct(this, 'RedashScheduler', {
